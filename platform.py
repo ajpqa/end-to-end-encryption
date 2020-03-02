@@ -25,6 +25,7 @@ from cryptography.hazmat.primitives.asymmetric.dh import DHParameterNumbers
 from cryptography.hazmat.primitives.serialization import load_pem_parameters
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 
 import time
 
@@ -49,7 +50,8 @@ def on_message(client, userdata, msg):
       keys.pop(msg.payload.id, 0)
     elif msg.topic == 'messages':
       print("got a new message")
-      decrypt(client, msg.payload)
+      payload = json.loads(msg.payload)
+      decrypt(client, payload)
     else:
       print(msg.topic+" "+str(msg.payload))
 
@@ -58,10 +60,10 @@ def newDevice(client, payload):
     g = int(payload["g"])
     p = int(payload["p"])
     y = int(payload["public_key"])
+    device_id = payload["id"]
 
-    #print("g: " + str(g))
-    #print("p: " + str(p))
-    #print("y: " + str(y))
+    devices.update({device_id: {}})
+
 
     pn = dh.DHParameterNumbers(p, g)
     parameters = pn.parameters(default_backend())
@@ -85,19 +87,30 @@ def newDevice(client, payload):
     derived_key = HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=b'handshake data', backend=default_backend()).derive(shared_key)
 
     print("Clave calculada por mi = %s\n"%derived_key.hex())
-    keys.update({"derived_key": derived_key})
+    devices[device_id].update({"derived_key": derived_key})
 
 def decrypt(client, payload):
-    key = base64.urlsafe_b64encode(keys['derived_key'])
+  print("decrypt")
+  device_id = payload['id']
+  encrypted_data = payload['encrypted_data']
+
+  key = base64.urlsafe_b64encode(devices[device_id]['derived_key'])
+
+  if payload['encryption'] == 'fernet':
     f = Fernet(key)
     message = f.decrypt(payload)
-    print(str(message))
+  else:
+    aad = payload['aad']
+    nonce = payload['nonce']
+    cipher = ChaCha20Poly1305(key)
+    message = chacha.decrypt(nonce, encrypted_data, aad)
+
+  print(str(message))
 
 
 
-keys = dict()
 
-device_id = urandom(16)
+devices = dict()
 
 client = mqtt.Client()
 client.on_connect = on_connect
@@ -107,17 +120,10 @@ client.username_pw_set("try","try")
 
 client.connect("broker.shiftr.io", 1883, 60)
 
-# Si quiero que esté escuchando para siempre:
-# client.loop_forever()
-# http://www.steves-internet-guide.com/loop-python-mqtt-client/
-
 # Inicia una nueva hebra
 client.loop_start()
 
 while 1:
     time.sleep(1)
 
-# También se puede conectar y enviar en una linea https://www.eclipse.org/paho/clients/python/docs/#single
-
-# Y conectar y bloquear para leer una sola vez en una sola linea https://www.eclipse.org/paho/clients/python/docs/#simple
 

@@ -24,6 +24,7 @@ from cryptography.hazmat.primitives.asymmetric.dh import DHParameterNumbers
 from cryptography.hazmat.primitives.serialization import load_pem_parameters
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 
 import time
 
@@ -45,7 +46,7 @@ def on_message(client, userdata, msg):
       payload = json.loads(msg.payload)
       getSharedKey(payload)
 
-def establishConnection(client):
+def establishConnection(client, device_id):
     global keys
     
     backend = default_backend()
@@ -62,10 +63,10 @@ def establishConnection(client):
     a_public_key = private_key.public_key()
     print("Esta es tu clave pública: %d"%a_public_key.public_numbers().y)
 
-    data = {'g': parameters.parameter_numbers().g, 'p': parameters.parameter_numbers().p, 'public_key': a_public_key.public_numbers().y}
+    data = {'g': parameters.parameter_numbers().g, 'p': parameters.parameter_numbers().p, 'public_key': a_public_key.public_numbers().y, 'id': device_id}
 
     payload = json.dumps(data)
-    print(payload)
+    #print(payload)
 
     client.subscribe("newDeviceResponse")
     client.publish("newDevice", payload, 1)
@@ -95,6 +96,12 @@ def getSharedKey(payload):
    
 keys = dict()
 
+device_id = str(os.urandom(16))
+print('My device id is : ' + str(device_id))
+
+encryptions = ["fernet", "aead"]
+encryption = encryptions[0]
+
 client = mqtt.Client()
 client.on_connect = on_connect
 client.on_message = on_message
@@ -110,7 +117,7 @@ client.connect("broker.shiftr.io", 1883, 60)
 # Inicia una nueva hebra
 client.loop_start()
 
-establishConnection(client)
+establishConnection(client, device_id)
 print(keys)
 #print("Clave calculada por mi = %s\n"%keys['shared_key'].hex())
 
@@ -119,22 +126,29 @@ while 'derived_key' not in keys:
   time.sleep(1)
 
 key = base64.urlsafe_b64encode(keys['derived_key'])
-f = Fernet(key)
+if encryption == "fernet":
+  cipher = Fernet(key)
+  data = b'Test message'
+  encrypted_data = cipher.encrypt(data)
+  dic = {'id': device_id, 'encryption': encryption, 'encrypted_data': str(encrypted_data)}
+else:
+  cipher = ChaCha20Poly1305(key)
+  data = b'Test message'
+  aad = b'This is the channel of device ' + str(device_id)
+  nonce = os.urandom(12)
+  encrypted_data = chacha.encrypt(nonce, data, aad)
 
+  dic = {'id': device_id, 'encryption': encryption, 'encrypted_data': str(encrypted_data), 'nonce': str(nonce), 'aad': aad}
+message = json.dumps(dic)
 
 while 1:
     # Publish a message every second
     #client.publish("hola", "Hello World", 1)
 
-    message = f.encrypt(b'Test message')
+    
     print("message: " + str(message))
 
     client.publish("messages", message, 1)
     
-    time.sleep(1)
-
-
-# También se puede conectar y enviar en una linea https://www.eclipse.org/paho/clients/python/docs/#single
-
-# Y conectar y bloquear para leer una sola vez en una sola linea https://www.eclipse.org/paho/clients/python/docs/#simple
+    time.sleep(10)
 
