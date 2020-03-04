@@ -125,20 +125,24 @@ while 'derived_key' not in keys:
   print("waiting for derived key")
   time.sleep(1)
 
-key = base64.urlsafe_b64encode(keys['derived_key'])
+
 if encryption == "fernet":
+  key = base64.urlsafe_b64encode(keys['derived_key'])
   cipher = Fernet(key)
   data = b'Test message'
   encrypted_data = cipher.encrypt(data)
-  dic = {'id': device_id, 'encryption': encryption, 'encrypted_data': str(encrypted_data)}
+  dic = {'id': device_id, 'encryption': encryption, 'encrypted_data': encrypted_data.decode()}
 else:
+  key = keys['derived_key']
   cipher = ChaCha20Poly1305(key)
   data = b'Test message'
-  aad = b'This is the channel of device ' + str(device_id)
+  aad = b'This is additional data'
   nonce = os.urandom(12)
-  encrypted_data = chacha.encrypt(nonce, data, aad)
+  encrypted_data = cipher.encrypt(nonce, data, aad)
 
-  dic = {'id': device_id, 'encryption': encryption, 'encrypted_data': str(encrypted_data), 'nonce': str(nonce), 'aad': aad}
+  print("Cencrypted data = %s\n"%encrypted_data.hex())
+
+  dic = {'id': device_id, 'encryption': encryption, 'encrypted_data': str(encrypted_data.hex()), 'nonce': str(nonce.hex()), 'aad': str(aad.hex())}
 message = json.dumps(dic)
 
 while 1:

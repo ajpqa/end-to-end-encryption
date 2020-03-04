@@ -92,18 +92,31 @@ def newDevice(client, payload):
 def decrypt(client, payload):
   print("decrypt")
   device_id = payload['id']
-  encrypted_data = payload['encrypted_data']
+  
 
-  key = base64.urlsafe_b64encode(devices[device_id]['derived_key'])
+  
 
   if payload['encryption'] == 'fernet':
+    encrypted_data = payload['encrypted_data'].encode()
+    key = base64.urlsafe_b64encode(devices[device_id]['derived_key'])
     f = Fernet(key)
-    message = f.decrypt(payload)
-  else:
-    aad = payload['aad']
-    nonce = payload['nonce']
-    cipher = ChaCha20Poly1305(key)
+    message = f.decrypt(encrypted_data)
+    print(str(message))
+  elif payload['encryption'] == 'aead':
+    print("aead")
+    key = devices[device_id]['derived_key']
+    aad = bytes.fromhex(payload['aad'])
+    nonce = bytes.fromhex(payload['nonce'])
+    encrypted_data = bytes.fromhex(payload['encrypted_data'])
+    print("aad and nonce")
+    chacha = ChaCha20Poly1305(key)
+    print("cipher")
     message = chacha.decrypt(nonce, encrypted_data, aad)
+    
+    print("decrypted")
+  else:
+    print('unknown encryption')
+    return 0
 
   print(str(message))
 
