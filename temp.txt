@@ -1,0 +1,3 @@
+HMAC DH: DH und danach shared key durch HMAC mit Masterkey für eigentlich benutzten Schlüssel verbinden -> Angreifer kann shared key bekommen, aber master key fehlt immer
+genau das gleiche für elliptic: elliptic DH und dann HMAC(master key, shared key)
+

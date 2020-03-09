@@ -42,11 +42,12 @@ def on_connect(client, userdata, flags, rc):
 
 # The callback for when a PUBLISH message is received from the server.
 def on_message(client, userdata, msg):
-  print(msg.topic+" "+str(msg.payload))
+  #print(msg.topic+" "+str(msg.payload))
 
   if msg.topic == "newDeviceResponse":
     payload = json.loads(msg.payload)
-    getSharedKey(payload)
+    if payload['id'] == device_id:
+      getSharedKey(payload)
   elif msg.topic == "authenticateResponse":
     payload = json.loads(msg.payload)
     authenticatePlatformAndGetTopic(payload)
@@ -187,7 +188,7 @@ def authenticate(master_key, device_id, client):
 
   client.publish('authentication', message, 1)
 
-  print("Sent authentication message: " + message)
+  print("Sent authentication message.")
 
 
 def startMqtt():

@@ -48,9 +48,8 @@ def on_message(client, userdata, msg):
     payload = json.loads(msg.payload)
     authenticate(payload, client)
   else:
-    print("got a new message")
     payload = json.loads(msg.payload)
-    decrypt(client, payload)
+    decrypt(client, payload, msg.topic)
 
 def newDevice(client, payload):
   g = int(payload["g"])
@@ -73,7 +72,7 @@ def newDevice(client, payload):
   public_key = private_key.public_key()
   #print("Esta es tu clave pública: %d"%public_key.public_numbers().y)
 
-  data = {'g': parameters.parameter_numbers().g, 'p': parameters.parameter_numbers().p, 'public_key': public_key.public_numbers().y}
+  data = {'g': parameters.parameter_numbers().g, 'p': parameters.parameter_numbers().p, 'public_key': public_key.public_numbers().y, 'id': device_id}
   pub_payload = json.dumps(data)
 
   client.publish("newDeviceResponse", pub_payload, 1)
@@ -86,9 +85,11 @@ def newDevice(client, payload):
 
   #print("Clave calculada por mi = %s\n"%derived_key.hex())
   devices[device_id].update({"derived_key": derived_key})
+  print("A new key was generated for the device " + device_id + ".")
 
-def decrypt(client, payload):
+def decrypt(client, payload, topic):
   device_id = payload['id']
+  print("Received encrypted message from topic " + topic + ": " + payload['encrypted_data'])
   
   if payload['encryption'] == 'fernet':
     print("fernet")
@@ -98,7 +99,7 @@ def decrypt(client, payload):
     message = f.decrypt(encrypted_data)
 
   elif payload['encryption'] == 'aead':
-    print("aead")
+    #print("aead")
     key = devices[device_id]['derived_key']
     aad = bytes.fromhex(payload['aad'])
     nonce = bytes.fromhex(payload['nonce'])
@@ -112,7 +113,7 @@ def decrypt(client, payload):
     print('unknown encryption')
     return 0
 
-  print(str(message.hex()))
+  print("The decrypted message received from topic " + topic + " is: " + str(message.hex()))
 
 def runDevice():
   global master_key
@@ -126,6 +127,7 @@ def runDevice():
 
   # Inicia una nueva hebra
   client.loop_start()
+  time.sleep(1) #so the output is displayed in the correct order
 
   while 1:
     seconds = 1
@@ -144,7 +146,8 @@ def runDevice():
         continue
       print("Listening...")
     elif choice1 == 2:
-      print(devices.keys())
+      for key in devices.keys():
+        print("Device " + key)
     elif choice1 == 3:
       device = input("Enter the id of the device that should be removed: ")
       devices.pop(device , None)
@@ -197,8 +200,4 @@ master_key = '03574e16832140423cc63f5ba02cd2063d3c28e41a497aa471e75fb640ca3e1c'
 
 devices = dict()
 runDevice()
-
-
-
-
 
