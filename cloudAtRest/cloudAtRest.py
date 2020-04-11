@@ -13,9 +13,9 @@ path_unsecure = './unsecure/'
 
 #Clean folders
 shutil.rmtree(path_secure,ignore_errors=True)
-#shutil.rmtree(path_unsecure,ignore_errors=True)
+shutil.rmtree(path_unsecure,ignore_errors=True)
 os.mkdir(path_secure)
-#os.mkdir(path_unsecure)
+os.mkdir(path_unsecure)
 
 
 def listFiles():
@@ -80,7 +80,9 @@ def getEncryptedFile():
       sink.close()
 
 listFiles()
+print("put")
 putEncryptedFile()
 listFiles()
+print("get")
 getEncryptedFile()
 listFiles()
