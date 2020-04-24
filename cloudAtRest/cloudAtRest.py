@@ -36,8 +36,11 @@ class KMS:
         self.currentUser = username
 
     def addFolderAccess(self, folder_path, usernames):
-        for name in usernames:
-            self.users[name].append(folder_path)
+        for username in usernames:
+            self.users[username].append(folder_path)
+    
+    def getAllAccessableFolders(self, username):
+        return self.users[username]
 
     def userHasAccess(self, username, folder_path):
         folder_path = folder_path.replace("./secure/", "").replace("./unsecure/", "")
@@ -71,7 +74,7 @@ class KMS:
     def getIv(self, file_name):
         return self.dek_db[file_name]['iv']
 
-    def encrypt(self, file_name):
+    def encrypt(self, folder_path, file_name):
         tag = None
         
         #generate random 256 bit data encryption key
@@ -82,7 +85,7 @@ class KMS:
 
         algorithm = algorithms.AES(dek)
 
-        algo_name = self.getAlgoName(file_name)
+        algo_name = self.getAlgoName(folder_path + file_name)
         
         if algo_name == "aes":
             mode = modes.GCM(iv)
@@ -102,7 +105,7 @@ class KMS:
             encryptor.authenticate_additional_data(aad.encode())
 
         #PUT: Encrypt a file into secure folder
-        with open(file_name, "rb") as source, open(path_secure + self.currentUser + '/' + file_name, "wb+") as sink:
+        with open(file_name, "rb") as source, open(path_secure + folder_path + file_name, "wb+") as sink:
             byte = source.read(chunk_size)
             while byte:
                 sink.write(encryptor.update(byte))
@@ -115,7 +118,7 @@ class KMS:
         if algo_name == "aes":
             tag = encryptor.tag
 
-        self.addDek(file_name, dek, tag, iv)
+        self.addDek(folder_path + file_name, dek, tag, iv)
 
     def decrypt(self, file_name):
         #get iv and dek
@@ -129,7 +132,7 @@ class KMS:
 
         if algo_name == "aes":
             #get associated data
-            stats = os.stat(path_secure + self.currentUser + '/' + file_name)
+            stats = os.stat(path_secure + file_name)
             aad = str(stats.st_size)
             algorithm = algorithms.AES(dek)
             mode = modes.GCM(iv, tag)
@@ -142,7 +145,7 @@ class KMS:
             decryptor.authenticate_additional_data(aad.encode())
 
         #GET: Encrypt a file into secure folder 
-        with open(path_secure + self.currentUser + '/' + file_name, "rb") as source, open(path_unsecure + self.currentUser + '/' + file_name, "wb+") as sink:
+        with open(path_secure + file_name, "rb") as source, open(path_unsecure + file_name, "wb+") as sink:
             byte = source.read(chunk_size)
             while byte:
                 sink.write(decryptor.update(byte))
@@ -195,6 +198,9 @@ shutil.rmtree(path_unsecure,ignore_errors=True)
 os.mkdir(path_secure)
 os.mkdir(path_unsecure)
 
+file = open("ejemplo.txt", "wb+")
+file.write(b"This is an example.")
+file.close()
 
 choice = '1'
 username = ""
@@ -246,16 +252,28 @@ while True:
                     algorithm = input()
                     if algorithm in ['1', '2']:
                         break
-                kms.addFilename(file_name)
+                
+                while True:
+                    print("In which directory do you want to put the file?")
+                    i = 1
+                    for d in kms.getAllAccessableFolders(username):
+                        print(" " + str(i) + " /" + d + "/")
+                        i += 1
+                    dir_choice = input()
+                    if int(dir_choice) in range(1, len(kms.getAllAccessableFolders(username))+1, 1):
+                        break
+                folder_path = kms.getAllAccessableFolders(username)[int(dir_choice)-1] + "/"
+                kms.addFilename(folder_path + file_name)
                 algo_name = algo_names[int(algorithm)-1]
-                kms.addAlgoName(file_name, algo_name)
-                kms.encrypt(file_name)
+                kms.addAlgoName(folder_path + file_name, algo_name)
+                kms.encrypt(folder_path, file_name)
+                #os.remove(file_name)
             else:
                 print("File doesn't exist.\n")
         elif choice == '2':
             print("Which file do you want to get from the secure storage?\n")
             file_name = input()
-            if os.path.isfile(file_name):
+            if '/' in file_name and os.path.isfile(path_secure + file_name) or os.path.isfile(path_secure + username + '/' + file_name):
                 kms.decrypt(file_name)
             else:
                 print("File doesn't exist.\n")
