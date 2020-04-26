@@ -11,10 +11,27 @@ import time
 
 class KMS:
     def __init__(self):
-        self.kek = Fernet.generate_key()
+        self.kek_db = {}
+        self.masterKey = b'0'*32
+        #self.kek = Fernet.generate_key()
         self.dek_db = {}
         self.users = {}
         self.currentUser = ""
+
+    def getMasterKey(self):
+        self.masterKey = input("Master key to access files: ").encode()
+
+    def resetMasterKey(self):
+        self.masterKey = b'0'*32
+
+    def addFolderKek(self, folder_path):
+        f = Fernet(self.masterKey)
+        folder_kek = f.encrypt(Fernet.generate_key())
+        self.dek_db.update({folder_path: folder_kek})
+
+    def getFolderKek(self, folder_path):
+        f = Fernet(self.masterKey)
+        return f.decrypt(self.dek_db[folder_path])
 
     def existUsers(self):
         if self.users:
@@ -55,12 +72,14 @@ class KMS:
         self.dek_db[file_name].update({'algo_name': algo_name})
 
     def addDek(self, file_name, dek, tag, iv):
-        f = Fernet(self.kek)
+        folder_path = "/".join(file_name.split("/")[0:-1])
+        f = Fernet(self.getFolderKek(folder_path))
         dek = f.encrypt(dek)
         self.dek_db[file_name].update({'dek': dek, 'tag': tag, 'iv': iv})
 
     def getDek(self, file_name):
-        f = Fernet(self.kek)
+        folder_path = "/".join(file_name.split("/")[0:-1])
+        f = Fernet(self.getFolderKek(folder_path))
         db = self.dek_db[file_name]
         dek = f.decrypt(db['dek'])
         return dek
@@ -183,6 +202,7 @@ def createFolder(folder_path, usernames):
     os.mkdir(path_secure + folder_path)
     os.mkdir(path_unsecure + folder_path)
     kms.addFolderAccess(folder_path, usernames)
+    kms.addFolderKek(folder_path)
 
 def deleteFile(username, file_path):
     if kms.userHasAccess(username, "/".join(file_path.plit("/")[:-1])):
@@ -204,6 +224,8 @@ file.close()
 
 choice = '1'
 username = ""
+print("The key needed to access files during this session is: " + (Fernet.generate_key()).decode())
+
 while True:
     if kms.existUsers():
         while True:
@@ -218,6 +240,7 @@ while True:
                     break
                 else:
                     print("User doesn't exist.")
+            kms.getMasterKey()
         else:
             while True:
                 username = input("Username: ")
@@ -225,12 +248,14 @@ while True:
                     print("User already exists.\n")
                 else:
                     kms.addUser(username)
+                    kms.getMasterKey()
                     createFolder(username, [username])
                     break
     else:
         print("Create a new user.")
         username = input("Username: ")
         kms.addUser(username)
+        kms.getMasterKey()
         createFolder(username, [username])
 
     kms.setCurrentUser(username)
@@ -297,9 +322,10 @@ while True:
                     if user_choice == '1':
                         break
                     else:
-                        usernames.append(other_users[int(user_choice) - 2]) 
+                        usernames.append(other_users[int(user_choice) - 2])
             createFolder(folder_path, usernames)
         else:
+            kms.resetMasterKey()
             break
 
 
