@@ -3,35 +3,74 @@
 #https://stackoverflow.com/questions/1035340/reading-binary-file-and-looping-over-each-byte
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives import hashes, hmac
+from cryptography.exceptions import InvalidKey
 from cryptography.fernet import Fernet
-import os
+from base64 import urlsafe_b64encode
 import shutil
 import time
+import os
+
 
 class KMS:
     def __init__(self):
-        self.kek_db = {}
-        self.masterKey = b'0'*32
-        #self.kek = Fernet.generate_key()
-        self.dek_db = {}
-        self.users = {}
+        self.kek_db = {} #{folder: {decryption_kek: <kek used to encrypt deks of that folder the last time they were accessed>, encryption_kek: <kek that will be used to re-encrypt the deks the next time they are accessed>}}
+        self.pwd_db = {} #{folder: <folder password hash to verify entered password is correct>}
+        self.dek_db = {} #{file_name: {algo_name: <name of algorithm used to encrypt the file>, dek: <encrypted data encryption key>, tag: <tag used to authenticate the data>, iv: <initialization vector>}}
+        self.users = {} #{username: {pwd: <user password hash>, folders: {folder: <folder password encrypted with user password>}}}
         self.currentUser = ""
 
-    def getMasterKey(self):
-        self.masterKey = input("Master key to access files: ").encode()
-
-    def resetMasterKey(self):
-        self.masterKey = b'0'*32
-
     def addFolderKek(self, folder_path):
-        f = Fernet(self.masterKey)
-        folder_kek = f.encrypt(Fernet.generate_key())
-        self.dek_db.update({folder_path: folder_kek})
+        #set folder password which allows user to gain access to shared_folder
+        folder_pwd = input("Set folder password used for first access: ")
 
-    def getFolderKek(self, folder_path):
-        f = Fernet(self.masterKey)
-        return f.decrypt(self.dek_db[folder_path])
+        #store hash of folder password to verify that entered password is the correct one later
+        kdf = Scrypt(salt=self.users[self.currentUser]["salt"], length=32, n=2**4, r=8, p=1, backend=default_backend())
+        key = kdf.derive(folder_pwd.encode()) 
+        self.pwd_db.update({folder_path: key})
+
+        #generate kek of folder
+        generated_kek = Fernet.generate_key()
+
+        #encrypt the kek using the folder password and store the encrypted kek
+        salt = os.urandom(16)
+        kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=100000, backend=default_backend())
+        folder_key = kdf.derive(folder_pwd.encode())
+        f = Fernet(urlsafe_b64encode(folder_key))
+        folder_kek = f.encrypt(generated_kek)
+        self.kek_db.update({folder_path: {"decryption_kek": folder_kek, "encryption_kek": folder_kek, "salt": salt}})
+
+        #store folder password encrypted with user password
+        while True:
+            user_pwd = input("Enter your user password: ")
+            kdf = Scrypt(salt=self.users[self.currentUser]["salt"], length=32, n=2**4, r=8, p=1, backend=default_backend())
+            try:
+                kdf.verify(user_pwd.encode(), self.users[self.currentUser]["pwd"])
+            except InvalidKey:
+                print("The password is wrong.")
+                continue
+            else:
+                break
+        kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=self.users[self.currentUser]["salt"], iterations=100000, backend=default_backend())
+        user_key = kdf.derive(user_pwd.encode())
+        f = Fernet(urlsafe_b64encode(user_key))
+        encrypted_folder_pwd = f.encrypt(folder_pwd.encode())
+        print("\n encrypted folder pw: " + encrypted_folder_pwd.decode() + "\nfolder path: " + folder_path + "\n")
+        print("CODE: " + urlsafe_b64encode(user_key).decode())
+        self.users[self.currentUser]["folders"].update({folder_path: encrypted_folder_pwd})
+
+    def getEncryptionFolderKek(self, folder_path):
+        encryption_kek = self.kek_db[folder_path]["encryption_kek"]
+        #dek will be encrypted with encryption kek which could be a new one after rotation -> decryption kek will be set to encryption kek
+        self.kek_db[folder_path].update({"decryption_kek": encryption_kek})
+        return  encryption_kek
+
+    def getDecryptionFolderKek(self, folder_path):
+        return self.kek_db[folder_path]["decryption_kek"]
 
     def existUsers(self):
         if self.users:
@@ -44,7 +83,12 @@ class KMS:
         return False
 
     def addUser(self, username):
-        self.users.update({username: [username]})
+        pwd = input("Set your password: ")
+        salt = os.urandom(16)
+        #derive
+        kdf = Scrypt(salt=salt, length=32, n=2**4, r=8, p=1, backend=default_backend())
+        key = kdf.derive(pwd.encode())
+        self.users.update({username: {"pwd": key, "salt": salt, "folders": {}}})
 
     def getUsers(self):
         return [name for name in self.users]
@@ -54,14 +98,14 @@ class KMS:
 
     def addFolderAccess(self, folder_path, usernames):
         for username in usernames:
-            self.users[username].append(folder_path)
+            self.users[username]["folders"].update({folder_path: None})
     
     def getAllAccessableFolders(self, username):
-        return self.users[username]
+        return list(self.users[username]["folders"].keys())
 
     def userHasAccess(self, username, folder_path):
         folder_path = folder_path.replace("./secure/", "").replace("./unsecure/", "")
-        if folder_path in self.users[username]:
+        if folder_path in self.users[username]["folders"]:
             return True
         return False
 
@@ -73,15 +117,74 @@ class KMS:
 
     def addDek(self, file_name, dek, tag, iv):
         folder_path = "/".join(file_name.split("/")[0:-1])
-        f = Fernet(self.getFolderKek(folder_path))
+        while True:
+            pwd = input("user  password: ")
+            kdf = Scrypt(salt=self.users[self.currentUser]["salt"], length=32, n=2**4, r=8, p=1, backend=default_backend())
+            try:
+                kdf.verify(pwd.encode(), self.users[self.currentUser]["pwd"])
+            except InvalidKey:
+                print("The password is wrong.")
+                continue
+            else:
+                break
+
+        #get encrypted folder password and encrypted kek
+        encrypted_folder_pwd = self.users[self.currentUser]["folders"][folder_path]
+        stored_kek = self.getEncryptionFolderKek(folder_path)
+
+        print("\n encrypted folder pwd 2: " + encrypted_folder_pwd.decode() + "\n folder path: " + folder_path + "\n")
+
+        #decrypt folder password using the user password
+        kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=self.users[self.currentUser]["salt"], iterations=100000, backend=default_backend())
+        pwd_key = kdf.derive(pwd.encode())
+
+        print("CODE: " + urlsafe_b64encode(pwd_key).decode())
+        f = Fernet(urlsafe_b64encode(pwd_key))
+        folder_pwd = f.decrypt(encrypted_folder_pwd)
+
+        #decrypt the kek using the decrypted folder password
+        kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=self.kek_db[folder_path]["salt"], iterations=100000, backend=default_backend())
+        folder_key = kdf.derive(folder_pwd)
+        f = Fernet(urlsafe_b64encode(folder_key))
+        folder_kek = f.decrypt(stored_kek)
+
+        #encrypt dek using the decrypted folder kek
+        f = Fernet(folder_kek)
         dek = f.encrypt(dek)
         self.dek_db[file_name].update({'dek': dek, 'tag': tag, 'iv': iv})
 
     def getDek(self, file_name):
         folder_path = "/".join(file_name.split("/")[0:-1])
-        f = Fernet(self.getFolderKek(folder_path))
-        db = self.dek_db[file_name]
-        dek = f.decrypt(db['dek'])
+        while True:
+            pwd = input("Enter your user password")
+            kdf = Scrypt(salt=self.users[self.currentUser]["salt"], length=32, n=2**4, r=8, p=1, backend=default_backend())
+            try:
+                kdf.verify(pwd.encode(), self.users[self.currentUser]["pwd"])
+            except InvalidKey:
+                print("The password is wrong.")
+                continue
+            else:
+                break
+        
+        #get encrypted folder password and folder kek
+        encrypted_folder_pwd = self.users[self.currentUser]["folders"][folder_path]
+        encrypted_kek = self.getDecryptionFolderKek(folder_path)
+
+        #decrypt folder password
+        kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=self.users[self.currentUser]["salt"], iterations=100000, backend=default_backend())
+        pwd_key = kdf.derive(pwd.encode())
+        f = Fernet(urlsafe_b64encode(pwd_key))
+        folder_pwd = f.decrypt(encrypted_folder_pwd)
+
+        #decrypt kek
+        kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=self.kek_db[folder_path]["salt"], iterations=100000, backend=default_backend())
+        folder_key = kdf.derive(folder_pwd)
+        f = Fernet(urlsafe_b64encode(folder_key))
+        kek = f.decrypt(encrypted_kek)
+
+        #decrypt dek
+        f = Fernet(kek)
+        dek = f.decrypt(self.dek_db[file_name]['dek'])
         return dek
     
     def getAlgoName(self, file_name):
@@ -93,7 +196,47 @@ class KMS:
     def getIv(self, file_name):
         return self.dek_db[file_name]['iv']
 
+    def firstAccessToFolder(self, folder_path):
+        if self.users[self.currentUser]["folders"][folder_path]:
+            return False
+        return True
+
+    def enterFolderPwd(self, folder_path):
+        while True:
+            folder_pwd = input("This is your first access to this folder. Please enter the folder password: ")
+            kdf = Scrypt(salt=self.users[self.currentUser]["salt"], length=32, n=2**4, r=8, p=1, backend=default_backend())
+            try:
+                kdf.verify(folder_pwd.encode(), self.pwd_db[folder_path])
+            except InvalidKey:
+                print("The password is wrong.")
+                continue
+            else:
+                break
+
+        print("Folder password will be stored for access in the future.")
+
+        while True:
+            pwd = input("Please enter the user password: ")
+            kdf = Scrypt(salt=self.users[self.currentUser]["salt"], length=32, n=2**4, r=8, p=1, backend=default_backend())
+            try:
+                kdf.verify(pwd.encode(), self.users[self.currentUser]["pwd"])
+            except InvalidKey:
+                print("The password is wrong.")
+                continue
+            else:
+                break
+        
+        kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=self.users[self.currentUser]["salt"], iterations=100000, backend=default_backend())
+        pwd_key = kdf.derive(pwd.encode())
+        f = Fernet(urlsafe_b64encode(pwd_key))
+        encrypted_folder_pwd = f.eccrypt(folder_pwd)
+        self.users[self.currentUser]["folders"].update({folder_path: encrypted_folder_pwd})
+
     def encrypt(self, folder_path, file_name):
+        #if first access to shared folder then the user needs to enter the folder password
+        if self.firstAccessToFolder(folder_path):
+            self.enterFolderPwd(folder_path)
+        
         tag = None
         
         #generate random 256 bit data encryption key
@@ -104,7 +247,7 @@ class KMS:
 
         algorithm = algorithms.AES(dek)
 
-        algo_name = self.getAlgoName(folder_path + file_name)
+        algo_name = self.getAlgoName(folder_path + "/" + file_name)
         
         if algo_name == "aes":
             mode = modes.GCM(iv)
@@ -124,7 +267,7 @@ class KMS:
             encryptor.authenticate_additional_data(aad.encode())
 
         #PUT: Encrypt a file into secure folder
-        with open(file_name, "rb") as source, open(path_secure + folder_path + file_name, "wb+") as sink:
+        with open(file_name, "rb") as source, open(path_secure + folder_path + "/" + file_name, "wb+") as sink:
             byte = source.read(chunk_size)
             while byte:
                 sink.write(encryptor.update(byte))
@@ -137,10 +280,16 @@ class KMS:
         if algo_name == "aes":
             tag = encryptor.tag
 
-        self.addDek(folder_path + file_name, dek, tag, iv)
+        self.addDek(folder_path + "/" + file_name, dek, tag, iv)
 
     def decrypt(self, file_name):
-        #get iv and dek
+        folder_path = "/".join(file_name.split("/")[0:-1])
+
+        #if first access to folder then the user has to enter folder password
+        if self.firstAccessToFolder(folder_path):
+            self.enterFolderPwd(folder_path)
+            
+        #get iv, dek, algo_name and authentication tag
         iv = self.getIv(file_name)
         dek = self.getDek(file_name)
         algo_name = self.getAlgoName(file_name)
@@ -224,7 +373,6 @@ file.close()
 
 choice = '1'
 username = ""
-print("The key needed to access files during this session is: " + (Fernet.generate_key()).decode())
 
 while True:
     if kms.existUsers():
@@ -237,10 +385,10 @@ while True:
             while True:
                 username = input("Username: ")
                 if kms.existUser(username):
+                    kms.setCurrentUser(username)
                     break
                 else:
                     print("User doesn't exist.")
-            kms.getMasterKey()
         else:
             while True:
                 username = input("Username: ")
@@ -248,17 +396,16 @@ while True:
                     print("User already exists.\n")
                 else:
                     kms.addUser(username)
-                    kms.getMasterKey()
+                    kms.setCurrentUser(username)
                     createFolder(username, [username])
                     break
     else:
         print("Create a new user.")
         username = input("Username: ")
         kms.addUser(username)
-        kms.getMasterKey()
+        kms.setCurrentUser(username)
         createFolder(username, [username])
 
-    kms.setCurrentUser(username)
             
     while True:
         while True:
@@ -287,10 +434,10 @@ while True:
                     dir_choice = input()
                     if int(dir_choice) in range(1, len(kms.getAllAccessableFolders(username))+1, 1):
                         break
-                folder_path = kms.getAllAccessableFolders(username)[int(dir_choice)-1] + "/"
-                kms.addFilename(folder_path + file_name)
+                folder_path = kms.getAllAccessableFolders(username)[int(dir_choice)-1]
+                kms.addFilename(folder_path + "/" + file_name)
                 algo_name = algo_names[int(algorithm)-1]
-                kms.addAlgoName(folder_path + file_name, algo_name)
+                kms.addAlgoName(folder_path + "/" + file_name, algo_name)
                 kms.encrypt(folder_path, file_name)
                 #os.remove(file_name)
             else:
@@ -325,7 +472,6 @@ while True:
                         usernames.append(other_users[int(user_choice) - 2])
             createFolder(folder_path, usernames)
         else:
-            kms.resetMasterKey()
             break
 
 
