@@ -11,6 +11,7 @@ from cryptography.hazmat.primitives import hashes, hmac
 from cryptography.exceptions import InvalidKey
 from cryptography.fernet import Fernet
 from base64 import urlsafe_b64encode
+from datetime import datetime
 import shutil
 import time
 import os
@@ -18,7 +19,7 @@ import os
 
 class KMS:
     def __init__(self):
-        self.kek_db = {} #{folder: {decryption_kek: <kek used to encrypt deks of that folder the last time they were accessed>, encryption_kek: <kek that will be used to re-encrypt the deks the next time they are accessed>, salt: <folder salt>}}
+        self.kek_db = {} #{folder: {decryption_kek: <kek used to encrypt deks of that folder the last time they were accessed>, encryption_kek: <kek that will be used to re-encrypt the deks the next time they are accessed>, salt: <folder salt>, rotate: (True|False)}}
         self.pwd_db = {} #{folder: <folder password hash to verify entered password is correct>}
         self.dek_db = {} #{file_name: {algo_name: <name of algorithm used to encrypt the file>, dek: <encrypted data encryption key>, tag: <tag used to authenticate the data>, iv: <initialization vector>}}
         self.users = {} #{username: {salt: <user salt>, pwd: <user password hash>, folders: {folder: <folder password encrypted with user password>}}}
@@ -43,7 +44,7 @@ class KMS:
         folder_key = kdf.derive(folder_pwd.encode())
         f = Fernet(urlsafe_b64encode(folder_key))
         folder_kek = f.encrypt(generated_kek)
-        self.kek_db.update({folder_path: {"decryption_kek": folder_kek, "encryption_kek": folder_kek, "salt": salt}})
+        self.kek_db.update({folder_path: {"decryption_kek": folder_kek, "encryption_kek": folder_kek, "salt": salt, "rotate": False}})
 
         
         while True:
@@ -137,6 +138,8 @@ class KMS:
     def addDek(self, file_name, dek, tag, iv):
         #get folder path by eliminating filename from file path contained in <file_name>
         folder_path = "/".join(file_name.split("/")[0:-1])
+        name = file_name.split("/")[-1]
+        print(name)
 
         #user has to input user password until the hash of it is equal to the stored user password hash (until the password is correct)
         while True:
@@ -166,6 +169,27 @@ class KMS:
         folder_key = kdf.derive(folder_pwd)
         f = Fernet(urlsafe_b64encode(folder_key))
         folder_kek = f.decrypt(stored_kek)
+
+        if self.kek_db[folder_path]["rotate"]:
+            print("Key rotation happened. Reencrypting all DEKs of files in this directory with the new KEK.")
+
+            new_kek = Fernet.generate_key()
+            new_f = Fernet(new_kek)
+            f = Fernet(folder_kek)
+
+            for currentFile in os.listdir(path_secure + folder_path):
+                if currentFile == name:
+                    continue
+                file_encrypted_dek = self.dek_db[folder_path + "/" + currentFile]['dek']
+                file_dek = f.decrypt(file_encrypted_dek)
+                new_file_encrypted_dek = new_f.encrypt(file_dek)
+                self.dek_db[folder_path + "/" + currentFile].update({"dek": new_file_encrypted_dek})
+
+            f = Fernet(urlsafe_b64encode(folder_key))
+            new_encrypted_kek = f.encrypt(new_kek)
+            self.kek_db[folder_path].update({"decryption_kek": new_encrypted_kek, "encryption_kek": new_encrypted_kek})
+            self.kek_db[folder_path].update({"rotate": False})
+            folder_kek = new_kek
 
         #encrypt dek using the decrypted folder kek
         f = Fernet(folder_kek)
@@ -209,9 +233,27 @@ class KMS:
         f = Fernet(urlsafe_b64encode(folder_key))
         kek = f.decrypt(encrypted_kek)
 
-        #decrypt and return dek
+        #decrypt dek
         f = Fernet(kek)
         dek = f.decrypt(self.dek_db[file_name]['dek'])
+
+        if self.kek_db[folder_path]["rotate"]:
+            print("Key rotation happened. Reencrypting all DEKs of files in this directory with the new KEK.")
+
+            new_kek = Fernet.generate_key()
+            new_f = Fernet(new_kek)
+
+            for currentFile in os.listdir(path_secure + folder_path):
+                file_encrypted_dek = self.dek_db[folder_path + "/" + currentFile]['dek']
+                file_dek = f.decrypt(file_encrypted_dek)
+                new_file_encrypted_dek = new_f.encrypt(file_dek)
+                self.dek_db[folder_path + "/" + currentFile].update({"dek": new_file_encrypted_dek})
+
+            f = Fernet(urlsafe_b64encode(folder_key))
+            new_encrypted_kek = f.encrypt(new_kek)
+            self.kek_db[folder_path].update({"decryption_kek": new_encrypted_kek, "encryption_kek": new_encrypted_kek})
+            self.kek_db[folder_path].update({"rotate": False})
+
         return dek
 
     #return name of encryption algorithm used for a specific file    
@@ -244,6 +286,7 @@ class KMS:
         #repeated until the correct password was entered
         while True:
             folder_pwd = input("This is your first access to this folder. Please enter the folder password: ")
+            print(self.kek_db[folder_path])
             kdf = Scrypt(salt=self.kek_db[folder_path]["salt"], length=32, n=2**4, r=8, p=1, backend=default_backend())
             try:
                 kdf.verify(folder_pwd.encode(), self.pwd_db[folder_path])
@@ -374,7 +417,11 @@ class KMS:
                 byte = source.read(chunk_size)
             source.close()
             sink.close()
-        decryptor.finalize()
+        decryptor.finalize()           
+    
+    def rotateKeys(self):
+        for folder in self.kek_db:
+            self.kek_db[folder].update({"rotate": True})
 
 #initialize key management system
 kms = KMS()
@@ -436,9 +483,14 @@ file.close()
 #initialization
 choice = '1'
 username = ""
+lastTime = datetime.now()
 
 #user inderface
 while True:
+    if (datetime.now() - lastTime).total_seconds() > 60:
+        kms.rotateKeys()
+        lastTime = datetime.now()
+
     if kms.existUsers():
         while True:
             print("1 Login\n2 Create a new User")
@@ -474,6 +526,10 @@ while True:
 
             
     while True:
+        if (datetime.now() - lastTime).total_seconds() > 60:
+            kms.rotateKeys()
+            lastTime = datetime.now()
+
         while True:
             print("Logged in as user: " + username)
             print("What do you want to do?\n 1 Put a file in secure storage\n 2 Get a file from secure storage\n 3 List my files\n 4 Create a new folder\n 5 Logout\n")
