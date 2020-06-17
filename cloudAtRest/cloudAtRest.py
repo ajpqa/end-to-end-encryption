@@ -422,6 +422,15 @@ class KMS:
     def rotateKeys(self):
         for folder in self.kek_db:
             self.kek_db[folder].update({"rotate": True})
+    
+    def overwriteKey(self, file_name):
+        dek = self.getDek(file_name)
+        dek = dek.translate(b'\0'*256)
+        print(dek)
+        self.dek_db[file_name].update({"dek": dek})
+
+    def deleteKey(self, file_name):
+        self.dek_db.pop(file_name, None)
 
 #initialize key management system
 kms = KMS()
@@ -460,9 +469,9 @@ def createFolder(folder_path, usernames):
     kms.addFolderKek(folder_path)
 
 #delete a file from storage
-def deleteFile(username, file_path):
-    if kms.userHasAccess(username, "/".join(file_path.plit("/")[:-1])):
-        os.remove(file_path)
+#def deleteFile(username, file_path):
+#    if kms.userHasAccess(username, "/".join(file_path.plit("/")[:-1])):
+#        os.remove(file_path)
 
 #delete all files from the unsecure storafe
 def clearUnsecureFolder(username):
@@ -532,9 +541,9 @@ while True:
 
         while True:
             print("Logged in as user: " + username)
-            print("What do you want to do?\n 1 Put a file in secure storage\n 2 Get a file from secure storage\n 3 List my files\n 4 Create a new folder\n 5 Logout\n")
+            print("What do you want to do?\n 1 Put a file in secure storage\n 2 Get a file from secure storage\n 3 List my files\n 4 Create a new folder\n 5 Delete a file\n 6 Logout\n")
             choice = input()
-            if choice in ['1', '2', '3', '4', '5']:
+            if choice in ['1', '2', '3', '4', '5', '6']:
                 break
 
         if choice == '1':
@@ -593,6 +602,19 @@ while True:
                     else:
                         usernames.append(other_users[int(user_choice) - 2])
             createFolder(folder_path, usernames)
+        elif choice == '5':
+            file_name = input("Path of the file that should be deleted: ")
+            folder_path = "/".join(file_name.split("/")[0:-1])
+            if kms.userHasAccess(username, folder_path):
+                os.remove(file_name)
+                if "./unsecure/" in file_name:
+                    continue
+                else:
+                    file_name = file_name.replace("./secure/","")
+                    kms.overwriteKey(file_name)
+                    kms.deleteKey(file_name)
+            else:
+                print("You don't have access to this folder.")
         else:
             break
 
