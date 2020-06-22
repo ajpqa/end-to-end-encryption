@@ -273,6 +273,7 @@ class KMS:
     #dict <self.users[self.currentUser]["folders"][folder_path]> contains the encrypted folder key if the folder was accessed before
     #otherwise it's empty and the if-condition evaluates to False
     def firstAccessToFolder(self, folder_path):
+        folder_path = folder_path.replace("./secure/", "")
         if self.users[self.currentUser]["folders"][folder_path]:
             return False
         return True
@@ -374,6 +375,7 @@ class KMS:
     def decrypt(self, file_name):
         #get folder path by eliminating file name from file path
         folder_path = "/".join(file_name.split("/")[0:-1])
+        folder_path = folder_path.replace("./secure/", "")
 
         #if first access to folder then the user has to enter folder password
         #used for shared folders
@@ -426,11 +428,13 @@ class KMS:
     def overwriteKey(self, file_name):
         dek = self.getDek(file_name)
         dek = dek.translate(b'\0'*256)
+        print("Key was overwritten to: ")
         print(dek)
         self.dek_db[file_name].update({"dek": dek})
 
     def deleteKey(self, file_name):
         self.dek_db.pop(file_name, None)
+        print("Key was deleted.")
 
 #initialize key management system
 kms = KMS()
@@ -576,7 +580,8 @@ while True:
         elif choice == '2':
             print("Which file do you want to get from the secure storage?\n")
             file_name = input()
-            if '/' in file_name and os.path.isfile(path_secure + file_name) or os.path.isfile(path_secure + username + '/' + file_name):
+            if '/' in file_name and (os.path.isfile(path_secure + file_name) or os.path.isfile(file_name))or os.path.isfile(path_secure + username + '/' + file_name):
+                file_name = file_name.replace("./secure/", "")
                 kms.decrypt(file_name)
             else:
                 print("File doesn't exist.\n")
@@ -601,6 +606,7 @@ while True:
                         break
                     else:
                         usernames.append(other_users[int(user_choice) - 2])
+            folder_path = folder_path.replace("./secure/", "").replace("./unsecure/", "")
             createFolder(folder_path, usernames)
         elif choice == '5':
             file_name = input("Path of the file that should be deleted: ")
